@@ -1,0 +1,17 @@
+# Ignore environment file
+.env
+
+onePrompt.py
+data_anonymization.py
+responses
+tablesummary_ns.txt
+tablesummary.py
+orderintake_summaries.txt
+
+OpenAI/OLD
+OpenAI/summaries_free.csv
+OpenAI/summaries_free.txt
+OpenAI/summaries.csv
+
+
+

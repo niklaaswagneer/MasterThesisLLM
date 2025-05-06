@@ -1,0 +1,260 @@
+import logging
+import ollama
+import sys
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from data_processing import DataHandler
+from mapping import productline_mapping
+
+logging.basicConfig(
+    level=logging.INFO,  #
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+
+file_path = os.getenv("ORDER_INTAKE_PATH")
+
+# Load and clean data
+dataset = DataHandler(file_path)
+llama_3B="llama3.2"
+deepseek = "deepseek-r1:8b"
+llama_8b = "llama3.1:8b"
+qwen = "qwen2.5:7b"
+qwen3B ="qwen2.5:3b"
+
+#Summarize to natural language per product line and region 
+#Make a summary of the drivers across regions in natural language 
+#Make a summary of data with clearly stated rules on how long it should be 
+#Sanity check if description is correct compared to the inputed data. 
+
+#Roles
+natural_language_interpreter = "You are a financial data analyst summarizing order intake trends for different product lines and regions."
+analysis_role = "You are a business analyst specializing in data-driven insights for order intake trends."
+summary_role = "You are a report writer summarizing order intake trends for a qualative summary."
+validator = "You are a financial validator that factchecks the financial reporting"
+
+def natural_language(analysis):
+    """Summarizing analysis given by the previous LLM call"""
+
+    analysis = analysis.reset_index(drop=True)
+    string_analysis = analysis.to_string(index=False)
+
+    print(string_analysis)
+    prompt = f"""
+        ### **Context:**
+        This data summarizes **order intake changes** across product lines and regions.
+        Each entry contains:
+        - The product-line
+        - The region the entry relates to
+        - The **magnitude** of the change (minor/major increase/decrease).
+        - The **relative magnitude** to the overal change.
+        
+        ***The data:
+        {string_analysis}
+
+        ### **Task:**
+        - **Summarize changes per row**, one at a time.
+        - Clearly state **major vs. minor** changes.
+        - Write in ** natural language**.
+
+        ### **Rules:**
+        - Use concise, structured sentences.
+        - Do **not** generate code.
+
+        ### **Example Output:**
+        - "[Product-Line] saw a **major increase** in [Region] of [Magnitude]"
+        - "[Product- Line ]had a **minor decrease** in [Region] of [Magnitude]"
+"""
+
+
+    response = ollama.chat(model=llama_8b, 
+                            messages=[
+                                {"role": "system", "content": natural_language_interpreter},
+                                {"role": "user", "content": prompt}],
+                            options={"temperature":0}
+                            )
+
+    final_summary = response['message']['content'].strip()
+    return final_summary
+
+
+
+def analysis_of_data(natural_language_report):
+    """Summarizing analysis given by the previous LLM call"""
+
+    prompt = f"""
+        ### **Context:**
+        The following data is summarization of the changes in orderintake between two periods.
+        It is per product line and presents in which regions that the changes occured
+        In the analysis there is also the magnitude as well if it is considered a minor/major increase/decrease. 
+
+        
+        ---
+        
+        ### ** Summary Data:**
+        
+        {natural_language_report}
+
+        ---
+        ### **Task:**
+        Create a summary of the data
+        1. Consider one productline at a time
+        2. Identify if the direction of change has been consistent across regions.
+        3. Identify the major drivers [Product Line] + [Region] for increase and decrease.
+        4. Write it in natural language.  (DO NOT GENERATE CODE)  
+        
+          ### **Rules:**
+        - Write in **clear, structured language**.
+        - Do **not** include raw numbers, only trends.
+        - Do **not** generate code.
+
+        ### **Example Output:**
+        - "[Product Line] up in all regions across all regions."
+        - "[Product Line] saw a major increase in [Region]."
+        - "[Product Line] saw a minor decrease across all [Region(s)]
+"""
+
+    response = ollama.chat(model=llama_8b, 
+
+                            messages=[{"role": "system", "content": analysis_role},
+                                {"role": "user", "content": prompt}],
+                            options={"temperature":0}
+                            )
+
+    final_summary = response['message']['content'].strip()
+    return final_summary
+
+
+def summary(analysis):
+    """Summarizing analysis given by the previous LLM call"""
+
+    prompt = f"""
+        ### **Context:**
+        The following data is from an analyis of the changes in orderintake between two periods.
+        In the analysis there is also the magnitude as well if it is considered a minor/major increase/decrease. 
+
+        
+        ---
+        
+        ### **Raw Summary Data:**
+        
+        {analysis}
+
+        ---
+        ### **Task:**
+        Create a summary of the data
+        1.Write a **concise summary** of the key trends.
+        2.Highlight significant changes and ignore minor fluctiations. 
+
+        ##** Example Output **
+        Use sentences like the following.
+        [Product Line] in [Region] as main growth driver. 
+        # [Product Line] up in all regions. [Product Line] increasing, 
+        # mainly in [Region]. Decrease from [Product Line] in [Region].
+        # [Product Line] decreasing in [Region]. 
+
+        ###Rules:###
+        1. Maximum 4 sentences
+        2. Make it descriptive and consice.
+        3. DO NOT GENERATE CODE!
+        
+    """
+
+    response3 = ollama.chat(model=llama_8b,
+                            messages=[{"role": "system", "content":summary_role},
+                                    {"role": "user", "content": prompt}],
+                            options={"temperature":0}
+                            )
+
+    final_summary = response3['message']['content'].strip()
+    return final_summary
+
+
+# Sanity check
+
+def validate_summary(summary, raw_data):
+    """Ensure summary does not introduce errors or hallucinations."""
+    raw_data_string = raw_data.to_string()
+    
+    prompt = f"""
+        ### **Context:**
+        Below is a generated summary of order intake trends.
+        Your task is to validate if the summary describes the raw data well.
+
+        ### **Raw Data:**
+        {raw_data_string}
+
+        ### **Generated Summary:**
+        {summary}
+
+        ### **Task:**
+        1. Verify that all trends match the raw data.
+        2. Flag any incorrect or misleading information.
+        3. Do not rewrite; just provide a validation report.
+
+        ### **Example Output:**
+        - "Validation Passed: No inconsistencies."
+        - "Validation Warning: [Product Line] in [Region] is reported as an increase, but data shows a decrease."
+        - "Validation Warning: [Product Line] reported decrease across all regions, but data show increases in [Region]
+    """
+    
+    response = ollama.chat(
+        model=llama_8b,
+        messages=[{"role": "system", "content": validator},
+                  {"role": "user", "content": prompt}],
+        options={"temperature": 0}
+    )
+    
+    return response['message']['content'].strip()
+
+
+def all_prompts_together(dataset, business_area, product_area):
+    data = dataset.preprocess_orderintake_by_product_area(business_area, product_area)
+
+    natural_language_prompt = natural_language(data)
+    logging.info('----- Natural Language -----\n%s', natural_language_prompt)
+
+    analyzed_data = analysis_of_data(natural_language_prompt)
+    logging.info('----- Analysis -----\n%s', analyzed_data)
+
+    summary_result = summary(analyzed_data)
+    logging.info('----- Summary -----\n%s', summary_result)
+
+    validation_report = validate_summary(summary_result, data)
+    logging.info('----- Validation -----\n%s', validation_report)
+
+    summary_product_line_mapped = productline_mapping(summary_result)
+
+
+    return summary_product_line_mapped, validation_report
+
+
+ACTH = ['ACAT', 'ACCA', 'ACCC', 'ACCP', 'ACCP', 'ACG3', 'ACTC','ACVI']
+SWIC =['ARJO', 'SWA3','SWIN', 'SWIW', 'SWWP']
+
+
+def compilation(dataset, product_area_list, business_area):
+    # Loop through all product areas
+    with open("final.txt", "a", encoding="utf-8") as file:  
+        for product_area in product_area_list:
+            print(dataset)
+            answer, sanity_check = all_prompts_together(dataset, business_area, product_area)
+            answer_mapped = productline_mapping(answer)
+            sanity_check_mapped = productline_mapping(sanity_check)
+
+            # Append answer to the file
+            file.write(f"Product Area: {product_area}\n")
+            file.write(answer_mapped + "\n\n")  
+            file.write(sanity_check_mapped + "\n\n")
+
+            print(f"Response for {product_area} saved to final.txt!")
+
+    return
+
+compilation(dataset,ACTH, 'ACTH')
+compilation(dataset,SWIC,'SWIC')
+
